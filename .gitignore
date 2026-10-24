@@ -1,0 +1,17 @@
+# данные и результаты
+images/
+report.html
+*.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# секреты
+.env
+
+# IDE
+.vscode/
+.idea/
