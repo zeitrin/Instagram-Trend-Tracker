@@ -1,5 +1,6 @@
 import psycopg2
-import config
+
+from . import config
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS posts (

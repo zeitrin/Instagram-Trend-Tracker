@@ -1,11 +1,12 @@
+"""Шаг 1. Сбор постов через Apify + скачивание картинок."""
 import os
 from datetime import datetime
 
 import requests
 from apify_client import ApifyClient
 
-import config
-from db import get_conn
+from . import config
+from .db import get_conn
 
 
 def to_unix(ts):
@@ -31,6 +32,8 @@ def dataset_id_of(run):
 
 
 def collect():
+    if not config.APIFY_TOKEN:
+        raise SystemExit("Не задан APIFY_TOKEN. Выполните: setx APIFY_TOKEN \"ваш_токен\" и откройте новый терминал.")
     client = ApifyClient(config.APIFY_TOKEN)
     print(f"Сбор: {len(config.ACCOUNTS)} аккаунтов x {config.POSTS_PER_ACCOUNT} постов (несколько минут)...")
     run = client.actor("apify/instagram-scraper").call(run_input={
@@ -93,7 +96,7 @@ def download_images(conn):
     print(f"Скачиваю картинки: {len(rows)}")
     ok = 0
     for shortcode, url in rows:
-        path = os.path.join(config.IMAGES_DIR, f"{shortcode}.jpg")
+        path = str(config.IMAGES_DIR / f"{shortcode}.jpg")
         try:
             if not os.path.exists(path):
                 r = s.get(url, timeout=30)
@@ -109,8 +112,10 @@ def download_images(conn):
     print("скачано:", ok)
 
 
-if __name__ == "__main__":
+def run():
     conn = get_conn()
-    save(conn, collect())
-    download_images(conn)
-    print("Готово. Дальше: python analyze.py")
+    try:
+        save(conn, collect())
+        download_images(conn)
+    finally:
+        conn.close()

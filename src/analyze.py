@@ -1,3 +1,4 @@
+"""Шаг 2. Поиск постов-выбросов и разбор их картинок локальной vision-моделью (Ollama)."""
 import base64
 import io
 import json
@@ -6,8 +7,8 @@ import re
 import requests
 from PIL import Image
 
-import config
-from db import get_conn
+from . import config
+from .db import get_conn
 
 THEMES = [
     "logo/brand", "text/slogan", "meme/humor", "anime/manga", "cartoon/character",
@@ -49,12 +50,13 @@ def find_outliers(conn):
                    (p.likes + 3 * p.comments) / NULLIF(m.med, 0) AS lift
             FROM posts p JOIN m USING (account)
             WHERE p.image_path IS NOT NULL
+              AND p.ts >= %s
               AND (p.likes + 3 * p.comments) / NULLIF(m.med, 0) >= %s
               AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.shortcode = p.shortcode)
             ORDER BY lift DESC
             LIMIT %s
             """,
-            (config.LIFT_THRESHOLD, config.MAX_OUTLIERS),
+            (config.min_post_ts(), config.LIFT_THRESHOLD, config.MAX_OUTLIERS),
         )
         return cur.fetchall()
 
@@ -112,10 +114,11 @@ def tag_image(session, path, caption):
     return normalize(parse_json(r.json()["message"]["content"]))
 
 
-def main():
+def run():
     conn = get_conn()
     outliers = find_outliers(conn)
-    print(f"Выбросов для разбора: {len(outliers)} (модель {config.OLLAMA_MODEL})")
+    period = f"за последние {config.MAX_POST_AGE_DAYS} дней" if config.MAX_POST_AGE_DAYS else "за всё время"
+    print(f"Выбросов для разбора {period}: {len(outliers)} (модель {config.OLLAMA_MODEL})")
 
     s = requests.Session()
     s.trust_env = False  # Ollama локальная - не пускаем через системный прокси VPN
@@ -140,8 +143,4 @@ def main():
         mark = "футболка" if t["is_tshirt"] else "не футболка"
         print(f"[{i}/{len(outliers)}] {shortcode} x{lift:.1f} {mark} | {t['theme']} | {t['style']} | {t['motifs']}")
 
-    print("Готово. Дальше: python report.py")
-
-
-if __name__ == "__main__":
-    main()
+    conn.close()

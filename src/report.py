@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 
 from PIL import Image
 
-import config
-from db import get_conn
+from . import config
+from .db import get_conn
 
 THEME_RU = {
     "logo/brand": "Логотип / бренд", "text/slogan": "Текст / слоган", "meme/humor": "Мемы / юмор",
@@ -32,15 +32,18 @@ STYLE_RU = {
 
 def load(conn):
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*), COUNT(DISTINCT account), MIN(ts), MAX(ts) FROM posts")
+        since = config.min_post_ts()
+        cur.execute("SELECT COUNT(*), COUNT(DISTINCT account), MIN(ts), MAX(ts) FROM posts WHERE ts >= %s", (since,))
         n_posts, n_accounts, min_ts, max_ts = cur.fetchone()
         cur.execute(
             """
             SELECT t.shortcode, p.account, p.ts, p.likes, p.comments, p.image_path, t.lift,
                    t.is_tshirt, t.print_text, t.theme, t.style, t.motifs, t.summary
             FROM tags t JOIN posts p USING (shortcode)
+            WHERE p.ts >= %s
             ORDER BY t.lift DESC
-            """
+            """,
+            (since,),
         )
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -235,7 +238,7 @@ def build_html(stats, tees, all_tagged, themes, styles, motifs, n_rec, n_old):
 <body><div class="wrap">
   <h1>Тренды графических футболок</h1>
   <div class="muted">Instagram · {date(stats['min_ts'])} – {date(stats['max_ts'])} ·
-  «сейчас» = последние {config.RECENT_DAYS} дней · выброс = вовлеченность от x{config.LIFT_THRESHOLD:g} медианы аккаунта</div>
+  посты за последние {config.MAX_POST_AGE_DAYS or '∞'} дней · «сейчас» = последние {config.RECENT_DAYS} дней · выброс = вовлеченность от x{config.LIFT_THRESHOLD:g} медианы аккаунта</div>
 
   <div class="stats">
     <div class="stat"><b>{stats['accounts']}</b><span class="muted">аккаунтов</span></div>
@@ -266,11 +269,12 @@ def build_html(stats, tees, all_tagged, themes, styles, motifs, n_rec, n_old):
 </div></body></html>"""
 
 
-def main():
+def run(open_browser=True):
     conn = get_conn()
     stats, rows = load(conn)
+    conn.close()
     if not rows:
-        print("Нет разобранных постов. Сначала: python collect.py, затем python analyze.py")
+        print("Нет разобранных постов. Сначала: python main.py collect, затем python main.py analyze")
         return
     tees = [r for r in rows if r["is_tshirt"]]
     max_ts = stats["max_ts"]
@@ -281,13 +285,10 @@ def main():
 
     if n_old == 0:
         print("Внимание: все выбросы за последние дни - сравнивать не с чем. "
-              "Увеличьте POSTS_PER_ACCOUNT или уменьшите RECENT_DAYS.")
+              "Уменьшите RECENT_DAYS или увеличьте MAX_POST_AGE_DAYS в src/config.py.")
 
     with open(config.REPORT_FILE, "w", encoding="utf-8") as f:
         f.write(build_html(stats, tees, rows, themes, styles, motifs, n_rec, n_old))
-    print("Отчет:", os.path.abspath(config.REPORT_FILE))
-    webbrowser.open("file://" + os.path.abspath(config.REPORT_FILE))
-
-
-if __name__ == "__main__":
-    main()
+    print("Отчет:", config.REPORT_FILE)
+    if open_browser:
+        webbrowser.open(config.REPORT_FILE.as_uri())
