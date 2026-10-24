@@ -8,7 +8,7 @@ import requests
 from PIL import Image
 
 from . import config
-from .db import get_conn
+from .db import OUTLIER_WHERE, SCORED_SQL, get_conn, outlier_params
 
 THEMES = [
     "logo/brand", "text/slogan", "meme/humor", "anime/manga", "cartoon/character",
@@ -40,23 +40,17 @@ Caption: {caption}"""
 def find_outliers(conn):
     with conn.cursor() as cur:
         cur.execute(
-            """
-            WITH m AS (
-              SELECT account,
-                     PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY likes + 3 * comments) AS med
-              FROM posts GROUP BY account
-            )
-            SELECT p.shortcode, p.image_path, p.caption,
-                   (p.likes + 3 * p.comments) / NULLIF(m.med, 0) AS lift
-            FROM posts p JOIN m USING (account)
-            WHERE p.image_path IS NOT NULL
-              AND p.ts >= %s
-              AND (p.likes + 3 * p.comments) / NULLIF(m.med, 0) >= %s
-              AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.shortcode = p.shortcode)
-            ORDER BY lift DESC
-            LIMIT %s
+            f"""
+            WITH scored AS ({SCORED_SQL})
+            SELECT s.shortcode, s.image_path, s.caption, s.lift
+            FROM scored s
+            WHERE s.image_path IS NOT NULL
+              AND {OUTLIER_WHERE}
+              AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.shortcode = s.shortcode)
+            ORDER BY s.lift DESC
+            LIMIT %(limit)s
             """,
-            (config.min_post_ts(), config.LIFT_THRESHOLD, config.MAX_OUTLIERS),
+            outlier_params(limit=config.MAX_OUTLIERS),
         )
         return cur.fetchall()
 

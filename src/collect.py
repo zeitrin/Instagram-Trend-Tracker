@@ -46,6 +46,13 @@ def collect():
     return items
 
 
+def count_or_none(value):
+    """Лайки/комментарии: отрицательное или пустое значение = скрыто (NULL), а не 0."""
+    if isinstance(value, (int, float)) and value >= 0:
+        return int(value)
+    return None
+
+
 def save(conn, items):
     saved = 0
     with conn.cursor() as cur:
@@ -69,9 +76,9 @@ def save(conn, items):
                     p.get("shortCode"),
                     p.get("ownerUsername"),
                     to_unix(p.get("timestamp")),
-                    max(p.get("likesCount") or 0, 0),
-                    max(p.get("commentsCount") or 0, 0),
-                    p.get("videoPlayCount") or p.get("videoViewCount") or 0,
+                    count_or_none(p.get("likesCount")),
+                    count_or_none(p.get("commentsCount")),
+                    p.get("videoPlayCount") or p.get("videoViewCount") or None,
                     p.get("type"),
                     p.get("caption") or "",
                     p.get("displayUrl"),

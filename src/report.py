@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from PIL import Image
 
 from . import config
-from .db import get_conn
+from .db import OUTLIER_WHERE, SCORED_SQL, get_conn, outlier_params
 
 THEME_RU = {
     "logo/brand": "Логотип / бренд", "text/slogan": "Текст / слоган", "meme/humor": "Мемы / юмор",
@@ -35,15 +35,19 @@ def load(conn):
         since = config.min_post_ts()
         cur.execute("SELECT COUNT(*), COUNT(DISTINCT account), MIN(ts), MAX(ts) FROM posts WHERE ts >= %s", (since,))
         n_posts, n_accounts, min_ts, max_ts = cur.fetchone()
+        # lift пересчитывается здесь, а не берется из tags: так отчет всегда
+        # соответствует текущим настройкам и свежим лайкам/просмотрам.
         cur.execute(
-            """
-            SELECT t.shortcode, p.account, p.ts, p.likes, p.comments, p.image_path, t.lift,
+            f"""
+            WITH scored AS ({SCORED_SQL})
+            SELECT s.shortcode, s.account, s.ts, s.likes, s.comments, s.views, s.image_path,
+                   s.lift, s.basis, s.med_likes, s.med_comments, s.med_views,
                    t.is_tshirt, t.print_text, t.theme, t.style, t.motifs, t.summary
-            FROM tags t JOIN posts p USING (shortcode)
-            WHERE p.ts >= %s
-            ORDER BY t.lift DESC
+            FROM scored s JOIN tags t USING (shortcode)
+            WHERE {OUTLIER_WHERE}
+            ORDER BY s.lift DESC
             """,
-            (since,),
+            outlier_params(),
         )
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -123,6 +127,41 @@ def date(ts):
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m.%Y") if ts else "-"
 
 
+def num(n):
+    """1234 -> 1.2K, 2500000 -> 2.5M"""
+    if n is None:
+        return "?"
+    n = float(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 10_000:
+        return f"{n / 1000:.0f}K"
+    if n >= 1000:
+        return f"{n / 1000:.1f}K".replace(".0K", "K")
+    return f"{n:.0f}"
+
+
+BASIS_RU = {"likes": "по лайкам", "views": "по просмотрам", "comments": "по комментариям"}
+
+
+def metrics_line(r):
+    likes = "скрыты" if r["likes"] is None else num(r["likes"])
+    parts = [f"{likes} ♥", f"{num(r['comments'] or 0)} 💬"]
+    if r.get("views"):
+        parts.append(f"{num(r['views'])} ▶")
+    return " · ".join(parts)
+
+
+def norm_line(r):
+    if r["basis"] == "views":
+        norm = f"{num(r['med_views'])} ▶"
+    elif r["basis"] == "comments":
+        norm = f"{num(r['med_comments'])} 💬"
+    else:
+        norm = f"{num(r['med_likes'])} ♥"
+    return f"{BASIS_RU.get(r['basis'], '')}, норма аккаунта {norm}"
+
+
 def mini_gallery(examples):
     return "".join(
         f'<a href="{link(r)}" target="_blank" title="@{esc(r["account"])} x{r["lift"]:.1f}">'
@@ -192,7 +231,9 @@ def build_html(stats, tees, all_tagged, themes, styles, motifs, n_rec, n_old):
         <div class="post-info">
           <b>@{esc(r['account'])}</b> <span class="badge up">x{r['lift']:.1f}</span><br>
           <span class="muted">{esc(THEME_RU.get(r['theme'], r['theme']))} · {esc(STYLE_RU.get(r['style'], r['style']))}</span><br>
-          <span class="muted">{r['likes']} ♥ · {r['comments']} 💬 · {date(r['ts'])}</span>
+          <span>{metrics_line(r)}</span><br>
+          <span class="muted">{norm_line(r)}</span><br>
+          <span class="muted">{date(r['ts'])}</span>
         </div>
       </a>""" for r in top)
 
@@ -238,7 +279,8 @@ def build_html(stats, tees, all_tagged, themes, styles, motifs, n_rec, n_old):
 <body><div class="wrap">
   <h1>Тренды графических футболок</h1>
   <div class="muted">Instagram · {date(stats['min_ts'])} – {date(stats['max_ts'])} ·
-  посты за последние {config.MAX_POST_AGE_DAYS or '∞'} дней · «сейчас» = последние {config.RECENT_DAYS} дней · выброс = вовлеченность от x{config.LIFT_THRESHOLD:g} медианы аккаунта</div>
+  посты за последние {config.MAX_POST_AGE_DAYS or '∞'} дней · «сейчас» = последние {config.RECENT_DAYS} дней · выброс = от x{config.LIFT_THRESHOLD:g} нормы аккаунта по лайкам или просмотрам,
+  минимум {config.MIN_LIKES} ♥ или {num(config.MIN_VIEWS)} ▶</div>
 
   <div class="stats">
     <div class="stat"><b>{stats['accounts']}</b><span class="muted">аккаунтов</span></div>
